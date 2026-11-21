@@ -87,7 +87,7 @@ def verify_auth0_access_token(token: str) -> bool:
             leeway=30,
         )
         return True
-    except (jwt.PyJWTError, Exception):
+    except Exception:
         # Invalid, expired, incorrectly-audienced, or unverifiable tokens fail closed.
         return False
 
@@ -100,12 +100,13 @@ class BearerAuthMiddleware:
 
     async def reject(self, scope, receive, send, message="Unauthorized"):
         metadata_url = f"{PUBLIC_BASE_URL}/.well-known/oauth-protected-resource"
+        challenge = f'Bearer resource_metadata="{metadata_url}"'
+        if message != "Unauthorized":
+            challenge += ', error="invalid_token"'
         response = JSONResponse(
             {"error": message},
             status_code=401,
-            headers={
-                "WWW-Authenticate": f'Bearer resource_metadata="{metadata_url}"'
-            },
+            headers={"WWW-Authenticate": challenge},
         )
         return await response(scope, receive, send)
 
@@ -490,6 +491,7 @@ async def oauth_protected_resource(request: Request):
     return JSONResponse({
         "resource": PUBLIC_BASE_URL,
         "authorization_servers": [AUTH0_ISSUER],
+        "bearer_methods_supported": ["header"],
         "resource_documentation": PUBLIC_BASE_URL,
     })
 
@@ -579,6 +581,7 @@ async def upload_video(request: Request):
 
 mcp_app = mcp.streamable_http_app()
 
-# MCP requests require Auth0 OAuth. /upload retains CART3R_API_KEY auth.
-# /health and OAuth protected-resource metadata are public for discovery.
+# MCP requests require Auth0 OAuth at the HTTP transport boundary.
+# /upload retains CART3R_API_KEY auth. /health and OAuth metadata are public.
+# The 401 WWW-Authenticate challenge starts ChatGPT's server-level OAuth flow.
 app = BearerAuthMiddleware(mcp_app)
