@@ -10,6 +10,9 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
+import jwt
+from jwt import PyJWKClient
+
 import httpx
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
@@ -26,6 +29,10 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 CART3R_API_KEY = os.getenv("CART3R_API_KEY", "")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+AUTH0_DOMAIN = os.getenv("AUTH0_DOMAIN", "").strip().removeprefix("https://").removeprefix("http://").rstrip("/")
+AUTH0_ISSUER = f"https://{AUTH0_DOMAIN}/" if AUTH0_DOMAIN else ""
+AUTH0_AUDIENCE = os.getenv("AUTH0_AUDIENCE", PUBLIC_BASE_URL).rstrip("/")
+AUTH0_JWKS_URL = f"{AUTH0_ISSUER}.well-known/jwks.json" if AUTH0_ISSUER else ""
 DATA_DIR = Path(os.getenv("DATA_DIR", "/tmp/cart3r-data"))
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "100"))
 MAX_FRAMES = max(1, min(int(os.getenv("MAX_FRAMES", "8")), 12))
@@ -40,7 +47,16 @@ if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is missing.")
 
 if not CART3R_API_KEY:
-    raise RuntimeError("CART3R_API_KEY is missing.")
+    raise RuntimeError("CART3R_API_KEY is missing (used to protect video uploads).")
+
+if not PUBLIC_BASE_URL:
+    raise RuntimeError("PUBLIC_BASE_URL is missing.")
+
+if not AUTH0_DOMAIN:
+    raise RuntimeError("AUTH0_DOMAIN is missing. Enter your Auth0 tenant domain.")
+
+if not AUTH0_AUDIENCE:
+    raise RuntimeError("AUTH0_AUDIENCE is missing.")
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -49,14 +65,49 @@ mcp = FastMCP("CART3R TikTok Vision")
 
 
 # --------------------------------------------------
-# Authentication middleware
+# Auth0 JWT verification and request authentication
 # --------------------------------------------------
 
+# Auth0 signs API access tokens with RS256. PyJWKClient downloads and caches
+# the tenant's public signing keys; no Auth0 client secret is stored here.
+jwks_client = PyJWKClient(AUTH0_JWKS_URL, cache_jwk_set=True, lifespan=3600)
+
+
+def verify_auth0_access_token(token: str) -> bool:
+    """Validate signature, issuer, audience, and expiry of an Auth0 JWT."""
+    try:
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
+        jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=AUTH0_AUDIENCE,
+            issuer=AUTH0_ISSUER,
+            options={"require": ["exp"]},
+            leeway=30,
+        )
+        return True
+    except (jwt.PyJWTError, Exception):
+        # Invalid, expired, incorrectly-audienced, or unverifiable tokens fail closed.
+        return False
+
+
 class BearerAuthMiddleware:
-    """Protect every endpoint except the public health check."""
+    """Auth0 protects MCP requests; a separate API key protects /upload."""
 
     def __init__(self, app):
         self.app = app
+
+    async def reject(self, scope, receive, send, message="Unauthorized"):
+        metadata_url = f"{PUBLIC_BASE_URL}/.well-known/oauth-protected-resource"
+        response = JSONResponse(
+            {"error": message},
+            status_code=401,
+            headers={
+                "WWW-Authenticate": f'Bearer resource_metadata="{metadata_url}"'
+            },
+        )
+        return await response(scope, receive, send)
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -64,7 +115,11 @@ class BearerAuthMiddleware:
 
         path = scope.get("path", "")
 
-        if path == "/health":
+        # These endpoints must be reachable before OAuth authentication.
+        if path in {
+            "/health",
+            "/.well-known/oauth-protected-resource",
+        }:
             return await self.app(scope, receive, send)
 
         headers = dict(scope.get("headers", []))
@@ -72,14 +127,22 @@ class BearerAuthMiddleware:
             "utf-8", errors="ignore"
         )
 
-        expected = f"Bearer {CART3R_API_KEY}"
+        # Keep the existing direct-upload workflow. This endpoint uses the
+        # separate CART3R_API_KEY because users upload files outside MCP calls.
+        if path == "/upload":
+            expected = f"Bearer {CART3R_API_KEY}"
+            if auth != expected:
+                return await self.reject(scope, receive, send, "Invalid upload API key")
+            return await self.app(scope, receive, send)
 
-        if auth != expected:
-            response = JSONResponse(
-                {"error": "Unauthorized"},
-                status_code=401
-            )
-            return await response(scope, receive, send)
+        # All remaining routes, including the MCP endpoint, require Auth0 JWTs.
+        if not auth.startswith("Bearer "):
+            return await self.reject(scope, receive, send)
+
+        token = auth[len("Bearer "):].strip()
+        valid = await asyncio.to_thread(verify_auth0_access_token, token)
+        if not valid:
+            return await self.reject(scope, receive, send, "Invalid or expired OAuth access token")
 
         return await self.app(scope, receive, send)
 
@@ -421,6 +484,16 @@ async def health(request: Request):
     })
 
 
+@mcp.custom_route("/.well-known/oauth-protected-resource", methods=["GET"])
+async def oauth_protected_resource(request: Request):
+    """Tell OAuth-capable MCP clients which Auth0 tenant protects this API."""
+    return JSONResponse({
+        "resource": PUBLIC_BASE_URL,
+        "authorization_servers": [AUTH0_ISSUER],
+        "resource_documentation": PUBLIC_BASE_URL,
+    })
+
+
 @mcp.custom_route("/upload", methods=["POST"])
 async def upload_video(request: Request):
     try:
@@ -506,6 +579,6 @@ async def upload_video(request: Request):
 
 mcp_app = mcp.streamable_http_app()
 
-# The middleware protects /mcp and /upload.
-# /health is intentionally public.
+# MCP requests require Auth0 OAuth. /upload retains CART3R_API_KEY auth.
+# /health and OAuth protected-resource metadata are public for discovery.
 app = BearerAuthMiddleware(mcp_app)
