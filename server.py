@@ -504,7 +504,7 @@ async def upload_video(request: Request):
 # ASGI application
 # --------------------------------------------------
 
-mcp_app = mcp.streamable_http_app(host="0.0.0.0")
+mcp_app = mcp.streamable_http_app()
 
 # The middleware protects /mcp and /upload.
 # /health is intentionally public.
