@@ -7,7 +7,6 @@ import shutil
 import asyncio
 import tempfile
 import subprocess
-import importlib.metadata
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -22,7 +21,6 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 from mcp.server.transport_security import TransportSecuritySettings
 
-print("INSTALLED MCP VERSION:", importlib.metadata.version("mcp"))
 load_dotenv()
 
 # --------------------------------------------------
@@ -488,6 +486,14 @@ async def analyze_uploaded_video(upload_id: str) -> dict:
 # HTTP routes
 # --------------------------------------------------
 
+import logging
+
+registered_tools = mcp._tool_manager.list_tools()
+
+logging.warning(
+    "CART3R REGISTERED TOOLS: %s",
+    [tool.name for tool in registered_tools]
+)
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request):
     return JSONResponse({
