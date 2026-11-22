@@ -20,6 +20,7 @@ from openai import AsyncOpenAI
 from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
+from mcp.server.transport_security import TransportSecuritySettings
 
 print("INSTALLED MCP VERSION:", importlib.metadata.version("mcp"))
 load_dotenv()
@@ -63,7 +64,15 @@ if not AUTH0_AUDIENCE:
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-mcp = FastMCP("CART3R TikTok Vision")
+mcp = FastMCP(
+    "CART3R TikTok Vision MCP",
+    transport_security=TransportSecuritySettings(
+        allowed_hosts=[
+            "cart3r-tiktok-vision.onrender.com",
+            "cart3r-tiktok-vision.onrender.com:*",
+        ]
+    ),
+)
 
 
 # --------------------------------------------------
@@ -581,16 +590,7 @@ async def upload_video(request: Request):
 # ASGI application
 # --------------------------------------------------
 
-from mcp.server.transport_security import TransportSecuritySettings
-
-mcp_app = mcp.streamable_http_app(
-    transport_security=TransportSecuritySettings(
-        allowed_hosts=[
-            "cart3r-tiktok-vision.onrender.com",
-            "cart3r-tiktok-vision.onrender.com:*",
-        ],
-    )
-)
+mcp_app = mcp.streamable_http_app()
 
 # MCP requests require Auth0 OAuth at the HTTP transport boundary.
 # /upload retains CART3R_API_KEY auth. /health and OAuth metadata are public.
