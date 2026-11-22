@@ -579,7 +579,16 @@ async def upload_video(request: Request):
 # ASGI application
 # --------------------------------------------------
 
-mcp_app = mcp.streamable_http_app()
+from mcp.server.transport_security import TransportSecuritySettings
+
+mcp_app = mcp.streamable_http_app(
+    transport_security=TransportSecuritySettings(
+        allowed_hosts=[
+            "cart3r-tiktok-vision.onrender.com",
+            "cart3r-tiktok-vision.onrender.com:*",
+        ],
+    )
+)
 
 # MCP requests require Auth0 OAuth at the HTTP transport boundary.
 # /upload retains CART3R_API_KEY auth. /health and OAuth metadata are public.
