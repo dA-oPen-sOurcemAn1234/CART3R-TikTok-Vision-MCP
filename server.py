@@ -7,6 +7,7 @@ import shutil
 import asyncio
 import tempfile
 import subprocess
+import importlib.metadata
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -20,6 +21,7 @@ from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
+print("INSTALLED MCP VERSION:", importlib.metadata.version("mcp"))
 load_dotenv()
 
 # --------------------------------------------------
